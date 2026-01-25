@@ -1,11 +1,15 @@
+import os
 import pygame
-from core.constants import *
 from core.move import Move
+from core.constants import *
+
 
 CELL = 80
 BOARD_SIZE = CELL * 8
 SIDE_PANEL = 240
 FONT = None
+
+os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 
 class PygameApp:
     def __init__(self, controller, human_actor=None):
@@ -46,6 +50,15 @@ class PygameApp:
             self.screen.blit(line, (BOARD_SIZE + 10, y))
             y += 24
 
+    def draw_human_feedback(self):
+        feedback = getattr(self.controller, "last_move_feedback", None)
+        if feedback:
+            title = FONT.render("Your move", True, (255, 255, 255))
+            self.screen.blit(title, (BOARD_SIZE + 10, 280))
+
+            line = FONT.render(feedback, True, (200, 200, 200))
+            self.screen.blit(line, (BOARD_SIZE + 10, 310))
+
     def draw_last_ai_move(self):
         last = getattr(self.controller, "last_move", None)
         if not last:
@@ -60,6 +73,7 @@ class PygameApp:
     def draw(self):
         self.screen.fill((0, 0, 0))
         self.draw_side_panel()
+        self.draw_human_feedback()
 
         for y in range(8):
             for x in range(8):
@@ -71,14 +85,27 @@ class PygameApp:
         for y in range(8):
             for x in range(8):
                 piece = self.controller.state.board.get(x, y)
-                if piece:
-                    c = (255, 255, 255) if piece.color == WHITE else (200, 0, 0)
-                    pygame.draw.circle(
-                        self.screen,
-                        c,
-                        (x * CELL + CELL // 2, y * CELL + CELL // 2),
-                        CELL // 3
-                    )
+                if not piece:
+                    continue
+
+                cx = x * CELL + CELL // 2
+                cy = y * CELL + CELL // 2
+                radius = CELL // 3
+
+                base_color = (245, 245, 245) if piece.color == WHITE else (180, 0, 0)
+
+                pygame.draw.circle(self.screen, base_color, (cx, cy), radius)
+
+                if piece.kind == KING:
+                    crown_y = cy - radius // 2
+                    crown = [
+                        (cx - 14, crown_y + 10),
+                        (cx - 8,  crown_y),
+                        (cx,      crown_y + 10),
+                        (cx + 8,  crown_y),
+                        (cx + 14, crown_y + 10),
+                    ]
+                    pygame.draw.polygon(self.screen, (255, 215, 0), crown)
 
         legal = self.controller.get_legal_moves()
         for m in legal:

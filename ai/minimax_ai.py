@@ -1,61 +1,121 @@
 from ai.base import BaseAI
 from core.rules import get_all_moves, get_followup_captures
-from ai.evaluator import evaluate, evaluate_move
+from ai.evaluator import evaluate
 import math
+import os
+import json
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+
+def _board_key(board):
+    s = []
+    for y in range(8):
+        for x in range(8):
+            p = board.get(x, y)
+            if not p:
+                s.append("0")
+            else:
+                s.append(f"{p.color}{p.kind}")
+    return "".join(s)
+
+
+def _evaluate_root_move(args):
+    ai, game_state, move = args
+
+    clone = game_state.clone()
+    clone.board.move(move.fx, move.fy, move.tx, move.ty)
+
+    clone.switch_turn()
+    score = ai._minimax(clone, ai.depth - 1, -math.inf, math.inf)
+
+    return move, score
 
 
 class MinimaxAI(BaseAI):
-    def __init__(self, depth=3):
+    def __init__(self, depth=3, parallel=False, max_workers=None, cache_file="cache.json"):
         self.depth = depth
+        self.parallel = parallel
+        self.max_workers = max_workers or os.cpu_count()
         self.color = None
+
+        self.cache_file = cache_file
+        self.cache = {}
+        self.load_cache()
+
+    def load_cache(self):
+        if os.path.exists(self.cache_file):
+            with open(self.cache_file, "r") as f:
+                self.cache = json.load(f)
+
+    def save_cache(self):
+        with open(self.cache_file, "w") as f:
+            json.dump(self.cache, f)
 
     def explain(self, game_state, moves):
         self.color = game_state.turn
 
+        if not self.parallel or len(moves) < 2:
+            return self._explain_serial(game_state, moves)
+
         explanation = []
+
+        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = [
+                executor.submit(_evaluate_root_move, (self, game_state, move))
+                for move in moves
+            ]
+
+            for f in as_completed(futures):
+                explanation.append(f.result())
+
+        return explanation
+
+    def _explain_serial(self, game_state, moves):
+        explanation = []
+
         for move in moves:
             clone = game_state.clone()
             clone.board.move(move.fx, move.fy, move.tx, move.ty)
+            clone.switch_turn()
 
-            if abs(move.fx - move.tx) == 2:
-                followups = get_followup_captures(clone.board, move)
-                if followups:
-                    score = self._minimax(clone, followups, self.depth, False)
-                else:
-                    clone.switch_turn()
-                    score = self._minimax(clone, None, self.depth - 1, False)
-            else:
-                clone.switch_turn()
-                score = self._minimax(clone, None, self.depth - 1, False)
-
+            score = self._minimax(clone, self.depth - 1, -math.inf, math.inf)
             explanation.append((move, score))
 
         return explanation
 
     def choose_move(self, game_state, moves):
-        # Asetetaan AI väri
         self.color = game_state.turn
 
+        if not self.parallel or len(moves) < 2:
+            return self._choose_move_serial(game_state, moves)
+
+        best_score = -math.inf
+        best_move = None
+
+        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = [
+                executor.submit(_evaluate_root_move, (self, game_state, move))
+                for move in moves
+            ]
+
+            for f in as_completed(futures):
+                move, score = f.result()
+                if score > best_score:
+                    best_score = score
+                    best_move = move
+
+        return best_move
+
+    def _choose_move_serial(self, game_state, moves):
         best_score = -math.inf
         best_move = None
 
         for move in moves:
             clone = game_state.clone()
             clone.board.move(move.fx, move.fy, move.tx, move.ty)
+            clone.switch_turn()
 
-            # delta
-            delta = evaluate_move(game_state, clone, self.color)
-
-            if abs(move.fx - move.tx) == 2:
-                followups = get_followup_captures(clone.board, move)
-                if followups:
-                    score = delta + self._minimax(clone, followups, self.depth, False)
-                else:
-                    clone.switch_turn()
-                    score = delta + self._minimax(clone, None, self.depth - 1, False)
-            else:
-                clone.switch_turn()
-                score = delta + self._minimax(clone, None, self.depth - 1, False)
+            score = self._minimax(clone, self.depth - 1, -math.inf, math.inf)
 
             if score > best_score:
                 best_score = score
@@ -63,61 +123,74 @@ class MinimaxAI(BaseAI):
 
         return best_move
 
-    def _minimax(self, state, forced_moves, depth, maximizing):
-        if depth == 0 or state.finished:
-            return evaluate(state, self.color)
+    def _minimax(self, state, depth, alpha, beta):
+        assert depth >= 0
 
-        if forced_moves is None:
-            moves = get_all_moves(state.board, state.turn)
-        else:
-            moves = forced_moves
+        moves = get_all_moves(state.board, state.turn)
 
-        if not moves:
-            state.finished = True
-            return evaluate(state, self.color)
+        key = (
+            _board_key(state.board),
+            state.turn,
+            depth
+        )
+        if key in self.cache:
+            return self.cache[key]
+
+        if depth == 0 or not moves:
+            val = evaluate(state, self.color)
+            self.cache[key] = val
+            return val
+
+        maximizing = (state.turn == self.color)
+
+        # kevyt move ordering: syönnit ensin, ei ilmaisia
+        moves.sort(key=lambda m: abs(m.fx - m.tx) == 2, reverse=True)
 
         if maximizing:
-            best = -math.inf
+            value = -math.inf
             for m in moves:
                 clone = state.clone()
                 clone.board.move(m.fx, m.fy, m.tx, m.ty)
 
-                delta = evaluate_move(state, clone, self.color)
+                followups = (
+                    get_followup_captures(clone.board, m)
+                    if abs(m.fx - m.tx) == 2
+                    else None
+                )
 
-                if abs(m.fx - m.tx) == 2:
-                    followups = get_followup_captures(clone.board, m)
-                    if followups:
-                        val = delta + self._minimax(clone, followups, depth, True)
-                    else:
-                        clone.switch_turn()
-                        val = delta + self._minimax(clone, None, depth - 1, False)
+                if followups:
+                    val = self._minimax(clone, depth - 1, alpha, beta)
                 else:
                     clone.switch_turn()
-                    val = delta + self._minimax(clone, None, depth - 1, False)
+                    val = self._minimax(clone, depth - 1, alpha, beta)
 
-                best = max(best, val)
-
-            return best
+                value = max(value, val)
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
 
         else:
-            best = math.inf
+            value = math.inf
             for m in moves:
                 clone = state.clone()
                 clone.board.move(m.fx, m.fy, m.tx, m.ty)
 
-                delta = evaluate_move(state, clone, self.color)
+                followups = (
+                    get_followup_captures(clone.board, m)
+                    if abs(m.fx - m.tx) == 2
+                    else None
+                )
 
-                if abs(m.fx - m.tx) == 2:
-                    followups = get_followup_captures(clone.board, m)
-                    if followups:
-                        val = delta + self._minimax(clone, followups, depth, False)
-                    else:
-                        clone.switch_turn()
-                        val = delta + self._minimax(clone, None, depth - 1, True)
+                if followups:
+                    val = self._minimax(clone, depth - 1, alpha, beta)
                 else:
                     clone.switch_turn()
-                    val = delta + self._minimax(clone, None, depth - 1, True)
+                    val = self._minimax(clone, depth - 1, alpha, beta)
 
-                best = min(best, val)
+                value = min(value, val)
+                beta = min(beta, value)
+                if beta <= alpha:
+                    break
 
-            return best
+        self.cache[key] = value
+        return value

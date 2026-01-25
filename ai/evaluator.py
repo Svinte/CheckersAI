@@ -1,4 +1,6 @@
 from core.constants import WHITE, BLACK, MAN, KING
+from core.rules import get_all_moves, get_followup_captures
+
 
 def count_pieces(state):
     counts = {
@@ -20,8 +22,44 @@ def count_pieces(state):
 
     return counts
 
+
+def is_safe_square(x, y):
+    return x == 0 or x == 7 or y == 0 or y == 7
+
+
+def is_back_row(y, color):
+    return (color == WHITE and y == 7) or (color == BLACK and y == 0)
+
+
+def build_attack_map(board, opponent):
+    """
+    Palauttaa setin (x,y) ruuduista, jotka vastustaja voi syödä seuraavaksi.
+    """
+    attack = set()
+    moves = get_all_moves(board, opponent)
+
+    for m in moves:
+        if abs(m.fx - m.tx) == 2:
+            attack.add((m.tx, m.ty))
+
+    return attack
+
+
 def evaluate(game_state, perspective):
     score = 0
+
+    pieces = count_pieces(game_state)
+    if pieces[perspective] == 0:
+        return -100
+    if pieces[-perspective] == 0:
+        return 100
+
+    my_moves = len(get_all_moves(game_state.board, perspective))
+    enemy_moves = len(get_all_moves(game_state.board, -perspective))
+    score += (my_moves - enemy_moves) * 0.15
+
+    enemy_attack = build_attack_map(game_state.board, -perspective)
+
     for y in range(8):
         for x in range(8):
             p = game_state.board.get(x, y)
@@ -30,12 +68,6 @@ def evaluate(game_state, perspective):
 
             value = 1 if p.kind == MAN else 3
 
-            # keskusetu
-            center_bonus = 0
-            if 2 <= x <= 5 and 2 <= y <= 5:
-                center_bonus = 0.2
-
-            # korotusetu
             promotion_bonus = 0
             if p.kind == MAN:
                 if p.color == WHITE:
@@ -43,35 +75,22 @@ def evaluate(game_state, perspective):
                 else:
                     promotion_bonus = y * 0.05
 
-            score += (value + center_bonus + promotion_bonus) * p.color
+            safe_bonus = 0.05 if is_safe_square(x, y) else 0
+
+            back_row_bonus = 0
+            if p.kind == MAN and is_back_row(y, p.color):
+                back_row_bonus = 0.2
+
+            exposed_penalty = 0
+            if (x, y) in enemy_attack:
+                exposed_penalty = 1.1
+
+            score += (
+                value
+                + promotion_bonus
+                + safe_bonus
+                + back_row_bonus
+                - exposed_penalty
+            ) * p.color
 
     return score * perspective
-
-def evaluate_move(before, after, ai_color):
-    """
-    Pisteytys halutulla säännöllä.
-    """
-    b1 = count_pieces(before)
-    b2 = count_pieces(after)
-
-    score = 0
-
-    # Vastustajan napin syönti
-    enemy_eaten = b1[ai_color * -1] - b2[ai_color * -1]
-    score += enemy_eaten * 1
-
-    # Oman napin menetys
-    own_lost = b1[ai_color] - b2[ai_color]
-    score -= own_lost * 1
-
-    # Oman päivitys
-    own_kings_before = b1[f"king_{ai_color}"]
-    own_kings_after = b2[f"king_{ai_color}"]
-    score += (own_kings_after - own_kings_before) * 0.5
-
-    # Vastustajan päivitys
-    enemy_kings_before = b1[f"king_{ai_color * -1}"]
-    enemy_kings_after = b2[f"king_{ai_color * -1}"]
-    score -= (enemy_kings_after - enemy_kings_before) * 0.5
-
-    return score
