@@ -49,9 +49,12 @@ def evaluate(game_state, perspective):
     score = 0
 
     pieces = count_pieces(game_state)
-    if pieces[perspective] == 0:
+    my_count = pieces[perspective]
+    enemy_count = pieces[-perspective]
+
+    if my_count == 0:
         return -100
-    if pieces[-perspective] == 0:
+    if enemy_count == 0:
         return 100
 
     my_moves = len(get_all_moves(game_state.board, perspective))
@@ -59,6 +62,13 @@ def evaluate(game_state, perspective):
     score += (my_moves - enemy_moves) * 0.15
 
     enemy_attack = build_attack_map(game_state.board, -perspective)
+
+    if enemy_count > my_count:
+        capture_penalty = enemy_count / my_count
+    else:
+        capture_penalty = my_count / enemy_count
+
+    capture_penalty = max(1.0, capture_penalty)
 
     for y in range(8):
         for x in range(8):
@@ -75,20 +85,17 @@ def evaluate(game_state, perspective):
                 else:
                     promotion_bonus = y * 0.05
 
-            safe_bonus = 0.05 if is_safe_square(x, y) else 0
-
             back_row_bonus = 0
             if p.kind == MAN and is_back_row(y, p.color):
                 back_row_bonus = 0.2
 
             exposed_penalty = 0
             if (x, y) in enemy_attack:
-                exposed_penalty = 1.1
+                exposed_penalty = capture_penalty
 
             score += (
                 value
                 + promotion_bonus
-                + safe_bonus
                 + back_row_bonus
                 - exposed_penalty
             ) * p.color
